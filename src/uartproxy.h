@@ -30,6 +30,7 @@ typedef enum _uartproxy_exc_ret_t {
 typedef enum _uartproxy_event_type_t {
     EVT_MMIOTRACE = 1,
     EVT_IRQTRACE = 2,
+    EVT_VIRTIO = 3,
 } uartproxy_event_type_t;
 
 struct uartproxy_msg_start {
