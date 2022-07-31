@@ -106,9 +106,14 @@ class DART(Reloadable):
         self.ptecls = PTE_TYPES[compat]
 
     @classmethod
-    def from_adt(cls, u, path, instance=0, **kwargs):
-        dart_addr = u.adt[path].get_reg(instance)[0]
-        regs = DARTRegs(u, dart_addr)
+    def from_adt(cls, u, path, instance=None, **kwargs):
+        node = u.adt[path]
+        if len(node.reg) > 1 and not instance:
+            bases = [node.get_reg(i)[0] for i in range(len(node.reg))]
+            regs = DARTRegs(ReplicateAccesses(u, bases), 0)
+        else:
+            dart_addr = u.adt[path].get_reg(instance or 0)[0]
+            regs = DARTRegs(u, dart_addr)
         dart = cls(u.iface, regs, u)
         dart.ptecls = PTE_TYPES[u.adt[path].compatible[0]]
         return dart
