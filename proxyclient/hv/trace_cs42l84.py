@@ -10,7 +10,7 @@ def read_cstring(vaddr):
     phys = p.hv_translate(vaddr, False, False)
     if phys == 0:
         return "~~bad addr~~"
-    return p.iface.readmem(phys, 128).split(b"\x00")[0].decode("ascii")
+    return p.iface.readmem(phys, 256).split(b"\x00")[0].decode("ascii")
 
 def hook_write_reg(ctx):
     r = hv.ctx.regs
