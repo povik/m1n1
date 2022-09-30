@@ -6,6 +6,12 @@ from m1n1.utils import *
 from m1n1.fw.afk.rbep import *
 from m1n1.fw.afk.epic import *
 
+class AOPAudioPropKey(IntEnum):
+    SERVICE_CONTROLLER = 0x64
+    DEVICE_COUNT = 0x65
+
+    VERSION = 0x67
+
 class AFKRingBufSniffer(AFKRingBuf):
     def __init__(self, ep, state, base, size):
         super().__init__(ep, base, size)
@@ -139,6 +145,8 @@ class EPICEp(AFKEp):
         fd = BytesIO(data)
         hdr = EPICHeader.parse_stream(fd)
         sub = EPICSubHeaderVer2.parse_stream(fd)
+
+        hv.bt()
 
         self.log(f"{dir} {hdr.channel} Type {hdr.type} Ver {hdr.version} Tag {hdr.seq}")
         self.log(f"  Len {sub.length} Ver {sub.version} Cat {sub.category} Type {sub.type:#x} Ts {sub.timestamp:#x}")
