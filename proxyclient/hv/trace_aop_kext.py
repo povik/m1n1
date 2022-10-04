@@ -24,6 +24,7 @@ def decode_logprint(hv):
         "q": Int64ul,
         "s": Int64ul,
         "t": Int64ul,
+        "z": Int64ul,
     }
 
     stypes = {
@@ -44,7 +45,11 @@ def decode_logprint(hv):
         if conv == "%":
             return "%"
         elif conv == "s":
-            return hv.readmem(va_arg(Int64ul), 1024).split(b"\x00")[0].decode("ascii")
+            pointed = hv.readmem(va_arg(Int64ul), 1024).split(b"\x00")[0]
+            try:
+                return pointed.decode("ascii")
+            except ValueError:
+                return "<non-ascii: %s>" % pointed
         elif conv in "di":
             v = va_arg(stypes[mod])
             return f"%{flags or ''}{width or ''}{conv or ''}" % v
