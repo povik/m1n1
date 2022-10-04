@@ -87,9 +87,13 @@ class AFKEp(EP):
     @msg(0xa2, DIR.TX, AFKEP_Send)
     def Send(self, msg):
         for data in self.txbuf.read():
-            if self.state.verbose >= 3:
-                self.log(f">TX rptr={self.txbuf.state.rptr:#x}")
+            #if self.state.verbose >= 3:
+            if True:
+                self.log(f"===TX DATA=== epid={self.epid} rptr={self.txbuf.state.rptr:#x}")
                 chexdump(data)
+                self.log(f"===END DATA===")
+                self.log("Backtrace on TX data:")
+                self.hv.bt()
             self.handle_ipc(data, dir=">")
         return True
 
@@ -98,9 +102,11 @@ class AFKEp(EP):
     @msg(0x85, DIR.RX, AFKEPMessage)
     def Recv(self, msg):
         for data in self.rxbuf.read():
-            if self.state.verbose >= 3:
-                self.log(f"<RX rptr={self.rxbuf.state.rptr:#x}")
+            #if self.state.verbose >= 3:
+            if True:
+                self.log(f"===RX DATA=== epid={self.epid} rptr={self.rxbuf.state.rptr:#x}")
                 chexdump(data)
+                self.log(f"===END DATA===")
             self.handle_ipc(data, dir="<")
         return True
 
@@ -146,12 +152,10 @@ class EPICEp(AFKEp):
         hdr = EPICHeader.parse_stream(fd)
         sub = EPICSubHeaderVer2.parse_stream(fd)
 
-        hv.bt()
-
         self.log(f"{dir} {hdr.channel} Type {hdr.type} Ver {hdr.version} Tag {hdr.seq}")
         self.log(f"  Len {sub.length} Ver {sub.version} Cat {sub.category} Type {sub.type:#x} Ts {sub.timestamp:#x}")
         self.log(f"  Unk {sub.unk:#x}")
-        chexdump(data)
+        #chexdump(data)
 
         #if sub.category == EPICCategory.REPORT:
         #    self.handle_report(hdr, sub, fd)
