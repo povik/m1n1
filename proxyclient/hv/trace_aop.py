@@ -1,12 +1,26 @@
 # SPDX-License-Identifier: MIT
 from m1n1.trace import Tracer
 from m1n1.trace.dart import DARTTracer
-from m1n1.trace.asc import ASCTracer, EP, EPState, msg, msg_log, DIR
+from m1n1.trace.asc import ASCTracer, EP, EPState, msg, msg_log, DIR, EPContainer
 from m1n1.utils import *
+from m1n1.constructutils import *
 from m1n1.fw.afk.rbep import *
 from m1n1.fw.afk.epic import *
 
+import sys
+
 class AOPAudioPropKey(IntEnum):
+    IS_READY = 0x01
+
+    UNK_11 = 0x11
+    PLACEMENT = 0x1e
+    UNK_21 = 0x21
+    ORIENTATION = 0x2e
+    LOCATION_ID = 0x30
+    SERIAL_NO = 0x3e
+    VENDOR_ID = 0x5a
+    PRODUCT_ID = 0x5b
+
     SERVICE_CONTROLLER = 0x64
     DEVICE_COUNT = 0x65
 
@@ -131,118 +145,370 @@ class DummyAFKEp(AFKEp):
     def handle_ipc(self, data, dir=None):
         pass
 
-
-EPICCategoryVer2 = "EPICCategory" / Enum(Int8ul,
-    CALL = 0x10,
-    REPLY = 0x20,
-)
-
 EPICSubHeaderVer2 = Struct(
     "length" / Int32ul,
     "version" / Default(Int8ul, 2),
-    "category" / EPICCategoryVer2,
+    "category" / EPICCategory,
     "type" / Hex(Int16ul),
     "timestamp" / Default(Int64ul, 0),
-    "unk" / Default(Hex(Int64ul), 0)
+    "unk1" / Default(Hex(Int32ul), 0),
+    "unk2" / Default(Hex(Int32ul), 0),
 )
 
+class EPICCall:
+    @classmethod
+    def matches(cls, hdr, sub):
+        return int(sub.type) == cls.TYPE and int(sub.unk2) == cls.UNK2
+
+    def __init__(self, args):
+        #assert type(args) is self.ARGS
+        self.args = args
+        self.rets = None
+
+    @classmethod
+    def from_stream(cls, f):
+        return cls(cls.ARGS.parse_stream(f))
+
+    def dump(self, logger):
+        args_fmt = [f"{k}={v}" for (k, v) in self.args.items() if k != "_io"]
+        rets_fmt = [f"{k}={v}" for (k, v) in self.rets.items() if k != "_io"]
+        logger(f"{type(self).__name__}({', '.join(args_fmt)}) -> ({', '.join(rets_fmt)})")
+
+    def read_resp(self, f, logger=None):
+        if logger is None:
+            logger = print
+        self.rets = self.RETS.parse_stream(f)
+        self.dump(logger)
+
+CALLTYPES = []
+def reg_calltype(calltype):
+    CALLTYPES.append(calltype)
+    return calltype
+
+@reg_calltype
+class GetHIDDescriptor(EPICCall):
+    TYPE = 0x1
+    UNK2 = 228
+    ARGS = Struct(
+        "blank" / Const(0x0, Int32ul),
+    )
+    RETS = Struct(
+        "blank" / Const(0x0, Int32ul),
+        "descriptor" / HexDump(GreedyBytes),
+    )
+
+@reg_calltype
+class GetProperty(EPICCall):
+    TYPE = 0xa
+    ARGS = Struct(
+        "blank" / Const(0x0, Int32ul),
+        "key" / Enum(Int32ul, AOPAudioPropKey),
+    )
+    RETS = Struct(
+        #"blank" / Const(0x0, Int32ul),
+        "value" / GreedyBytes,
+    )
+
+    @classmethod
+    def matches(cls, hdr, sub):
+        # don't match on unk2
+        return sub.type == cls.TYPE
+
+@reg_calltype
+class WrappedCall(EPICCall):
+    SUBCLASSES = {}
+    TYPE = 0x20
+    HDR = Struct(
+        "blank" / Const(0x0, Int32ul),
+        "unk1" / Hex(Const(0xffffffff, Int32ul)),
+        "calltype" / Hex(Int32ul),
+        "blank2" / ZPadding(16),
+        "pad" / Hex(Int32ul),
+        "len" / Hex(Int64ul),
+        "residue" / HexDump(GreedyBytes),
+    )
+
+    @classmethod
+    def from_stream(cls, f):
+        payload = f.read()
+        subsub = cls.HDR.parse(payload)
+        calltype = int(subsub.calltype)
+        subcls = cls.SUBCLASSES.get(calltype, None)
+        if subcls is None:
+            raise ValueError(f"unknown calltype {calltype:#x}")
+        return subcls(subcls.ARGS.parse(payload))
+
+    @classmethod
+    def reg_subclass(cls, cls2):
+        cls.SUBCLASSES[int(cls2.CALLTYPE)] = cls2
+
+    @classmethod
+    def matches(cls, hdr, sub):
+        # don't match on unk2
+        return sub.category == EPICCategory.NOTIFY and sub.type == cls.TYPE
+
+@WrappedCall.reg_subclass
+class SetPowerState(WrappedCall):
+    CALLTYPE = 0xc3_00_00_05
+    ARGS = Struct(
+        "blank" / Const(0x0, Int32ul),
+        "unk1" / Hex(Const(0xffffffff, Int32ul)),
+        "calltype" / Hex(Int32ul),
+        "blank2" / ZPadding(16),
+        "pad" / Hex(Int32ul),
+        "len" / Hex(Int64ul),
+        "devid" / FourCC,
+        "modifier" / Int32ul,
+        "unk3" / Hex(Int32ul),
+        "devid_again" / FourCC,
+        "unk4" / Hex(Int32ul),
+        "unk5" / Hex(Int32ul),
+        "unk" / HexDump(GreedyBytes),
+        #"blank2" / ZPadding(8),
+        #"target" / FourCC,
+        #"unk6" / Hex(Int32ul),
+        #"blank3" / ZPadding(20),
+    )
+    RETS = Struct(
+        "unk" / HexDump(GreedyBytes),
+    )
+
+@WrappedCall.reg_subclass
+class AddDevice(WrappedCall):
+    CALLTYPE = 0xc3_00_00_02
+    ARGS = Struct(
+        "blank" / Const(0x0, Int32ul),
+        "unk1" / Hex(Const(0xffffffff, Int32ul)),
+        "calltype" / Hex(Int32ul),
+        "blank2" / ZPadding(16),
+        "pad" / Hex(Int32ul),
+        "len" / Hex(Int64ul),
+        "devid" / FourCC,
+        "unk2" / Hex(Int32ul), # can be found in debug prints
+    )
+    RETS = Struct(
+        "unk" / HexDump(GreedyBytes),
+    )
+
+@WrappedCall.reg_subclass
+class ProbeDevice(WrappedCall):
+    CALLTYPE = 0xc3_00_00_01
+    ARGS = Struct(
+        "blank" / Const(0x0, Int32ul),
+        "unk1" / Hex(Const(0xffffffff, Int32ul)),
+        "calltype" / Hex(Int32ul),
+        "blank2" / ZPadding(16),
+        "pad" / Hex(Int32ul),
+        "len" / Hex(Int64ul),
+        "devno" / Int32ul,
+    )
+    RETS = Struct(
+        "blank" / Const(0x0, Int32ul),
+        "devid" / FourCC,
+        "blank2" / Const(0x0, Int32ul),
+        "unk1" / Const(8, Int32ul),
+        "blank3" / Const(0x0, Int32ul),
+        "unk2" / Hex(Const(0x01_0d_1c_20, Int32ul)),
+        "blank4" / Const(0x0, Int32ul),
+        "unk3" / Hex(Enum(
+            Int32ul,
+            A = 0x85146502,
+            B = 0x0109B7D8,
+            C = 0x01051284,
+        )),
+        "unk" / HexDump(GreedyBytes),
+    )
+
+@WrappedCall.reg_subclass
+class GetPowerState(WrappedCall):
+    CALLTYPE = 0xc3_00_00_04
+    ARGS = Struct(
+        "blank" / Const(0x0, Int32ul),
+        "unk1" / Hex(Const(0xffffffff, Int32ul)),
+        "calltype" / Hex(Int32ul),
+        "blank2" / ZPadding(16),
+        "pad" / Hex(Int32ul),
+        "len" / Hex(Int64ul),
+        "devid" / FourCC,
+        "modifier" / Enum(Int32ul,
+            ORDINARY=200,
+            CLOCK_DOMAIN=203,
+        ),
+        "unk6" / Hex(Const(0x01, Int32ul)),
+    )
+    RETS = Struct(
+        "blank" / Const(0x0, Int32ul),
+        #"unk1" / Const(0x4, Int32ul),
+        "unk1" / Int32ul,
+        "state" / FourCC,
+    )
+
+@reg_calltype
+class IndirectCall(EPICCall):
+    ARGS = EPICCmd
+    RETS = EPICCmd
+
+    @classmethod
+    def matches(cls, hdr, sub):
+        return sub.category == EPICCategory.COMMAND
+
 class EPICEp(AFKEp):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pending_call = None
+        self.pending_cmd = None
+
+    def handle_hello(self, hdr, sub, fd):
+        if sub.type != 0xc0:
+            return False
+
+        payload = fd.read()
+        name = payload.split(b"\0")[0].decode("ascii")
+        self.log(f"Hello! (endpoint {name})")
+        return True
+
+    def handle_call(self, hdr, sub, fd):
+        for calltype in CALLTYPES:
+            if calltype.matches(hdr, sub):
+                try:
+                    self.pending_call = calltype.from_stream(fd)
+                except Exception as e:
+                    self.log(f"failed parsing ({calltype.__name__}): {e}")
+                    return False
+                return True
+
+        return False
+
+    def handle_reply(self, hdr, sub, fd):
+        if self.pending_call is None:
+            return False
+
+        try:
+            self.pending_call.read_resp(fd, logger=self.log)
+        except Exception as e:
+            self.log(f"failed parsing: {e}")
+        self.pending_call = None
+        return True
+
+    def dispatch_ipc(self, dir, hdr, sub, fd):
+        if sub.category == EPICCategory.COMMAND:
+            return self.handle_call(hdr, sub, fd)
+        if dir == "<" and sub.category == EPICCategory.REPORT:
+            return self.handle_hello(hdr, sub, fd)
+        if dir == ">" and sub.category == EPICCategory.NOTIFY:
+            return self.handle_call(hdr, sub, fd)
+        if dir == "<" and sub.category == EPICCategory.REPLY:
+            return self.handle_reply(hdr, sub, fd)
+
     def handle_ipc(self, data, dir=None):
         fd = BytesIO(data)
         hdr = EPICHeader.parse_stream(fd)
         sub = EPICSubHeaderVer2.parse_stream(fd)
 
-        self.log(f"{dir} {hdr.channel} Type {hdr.type} Ver {hdr.version} Tag {hdr.seq}")
+        if not getattr(self, 'VERBOSE', False):
+            return
+
+        if self.dispatch_ipc(dir, hdr, sub, fd):
+            return
+
+        self.log(f"{dir} 0x{hdr.channel:x} Type {hdr.type} Ver {hdr.version} Tag {hdr.seq}")
         self.log(f"  Len {sub.length} Ver {sub.version} Cat {sub.category} Type {sub.type:#x} Ts {sub.timestamp:#x}")
-        self.log(f"  Unk {sub.unk:#x}")
-        #chexdump(data)
-
-        #if sub.category == EPICCategory.REPORT:
-        #    self.handle_report(hdr, sub, fd)
-        #if sub.category == EPICCategory.NOTIFY:
-        #    self.handle_notify(hdr, sub, fd)
-        #elif sub.category == EPICCategory.REPLY:
-        #    self.handle_reply(hdr, sub, fd)
-        #elif sub.category == EPICCategory.COMMAND:
-        #    self.handle_cmd(hdr, sub, fd)
-
-    def handle_report(self, hdr, sub, fd):
-        if sub.type == 0x30:
-            init = EPICAnnounce.parse_stream(fd)
-            self.log(f"Init: {init.name}")
-            self.log(f"  Props: {init.props}")
-        else:
-            self.log(f"Report {sub.type:#x}")
-            chexdump(fd.read())
-
-    def handle_notify(self, hdr, sub, fd):
-        self.log(f"Notify:")
+        self.log(f"  Unk1 {sub.unk1:#x} Unk2 {sub.unk2:#x}")
         chexdump(fd.read())
 
-    def handle_reply(self, hdr, sub, fd):
-        try:
-            cmd = EPICCmd.parse_stream(fd)
-            payload = fd.read()
-        except:
-            self.log("Failed to parse reply")
-            return
-        self.log(f"Response {sub.type:#x}: {cmd.retcode:#x}")
-        if payload:
-            self.log("Inline payload:")
-            chexdump(payload)
-        if cmd.rxbuf:
-            self.log(f"RX buf @ {cmd.rxbuf:#x} ({cmd.rxlen:#x} bytes):")
-            chexdump(self.dart.ioread(0, cmd.rxbuf, cmd.rxlen))
+class SPUAppEp(EPICEp):
+    SHORT = "SPUApp"
 
-    def handle_cmd(self, hdr, sub, fd):
-        cmd = EPICCmd.parse_stream(fd)
-        payload = fd.read()
-        self.log(f"Command {sub.type:#x}: {cmd.retcode:#x}")
-        if payload:
-            chexdump(payload)
-        if cmd.txbuf:
-            self.log(f"TX buf @ {cmd.txbuf:#x} ({cmd.txlen:#x} bytes):")
-            chexdump(self.dart.ioread(0, cmd.txbuf, cmd.txlen))
+class AccelEp(EPICEp):
+    SHORT = "accel"
 
+class GyroEp(EPICEp):
+    SHORT = "gyro"
 
-class UNK20Ep(DummyAFKEp):
-    SHORT = "unk20"
+class LASEp(EPICEp):
+    SHORT = "las"
 
-class UNK21Ep(DummyAFKEp):
-    SHORT = "unk21"
+class WakeHintEp(EPICEp):
+    SHORT = "wakehint"
 
-class UNK22Ep(DummyAFKEp):
-    SHORT = "unk22"
-
-class UNK24Ep(DummyAFKEp):
-    SHORT = "unk23"
-
-class UNK25Ep(DummyAFKEp):
-    SHORT = "unk24"
-
-class UNK26Ep(DummyAFKEp):
-    SHORT = "unk25"
-
-class UNK27Ep(DummyAFKEp):
+class UNK26Ep(EPICEp):
     SHORT = "unk26"
 
-class AOPAudioEp(EPICEp):
-    SHORT = "audio-aop"
+class AudioEp(EPICEp):
+    SHORT = "aop-audio"
+    VERBOSE = True
 
-class UNK28Ep(DummyAFKEp):
-    SHORT = "unk28"
+class VoiceTriggerEp(EPICEp):
+    SHORT = "aop-voicetrigger"
 
 class AOPTracer(ASCTracer):
     ENDPOINTS = {
-        0x20: UNK20Ep,
-        0x21: UNK21Ep,
-        0x22: UNK22Ep,
-        0x24: UNK24Ep,
-        0x25: UNK25Ep,
+        0x20: SPUAppEp,
+        0x21: AccelEp,
+        0x22: GyroEp,
+        0x24: LASEp,
+        0x25: WakeHintEp,
         0x26: UNK26Ep,
-        0x27: AOPAudioEp,
-        0x28: UNK28Ep,
+        0x27: AudioEp,
+        0x28: VoiceTriggerEp,
     }
+
+    @classmethod
+    def replay(cls, f):
+        epmap = dict()
+        epcont = EPContainer()
+
+        class FakeASCTracer:
+            def __init__(self):
+                self.hv = None
+
+            def log(self, str):
+                print(str)
+        asc_tracer = FakeASCTracer()
+
+        for cls in cls.mro():
+            eps = getattr(cls, "ENDPOINTS", None)
+            if eps is None:
+                break
+            for k, v in eps.items():
+                if k in epmap:
+                    continue
+                ep = v(asc_tracer, k)
+                epmap[k] = ep
+                if getattr(epcont, ep.name, None):
+                    ep.name = f"{ep.name}{k:02x}"
+                setattr(epcont, ep.name, ep)
+                ep.start()
+
+        for l in f:
+            if (rxhdr := "===RX DATA===") in l:
+                dir = "<"
+                hdr = rxhdr
+            elif (txhdr := "===TX DATA===") in l:
+                dir = ">"
+                hdr = txhdr
+            else:
+                #print(l, end="")
+                continue
+
+            fields_str = l[l.index(hdr) + len(hdr):]
+            fields = dict([s.split("=") for s in fields_str.strip().split(" ")])
+            epid = int(fields["epid"])
+
+            datadump = ""
+            for l in f:
+                if "===END DATA===" in l:
+                    break
+                datadump += l
+
+            data = chexundump(datadump)
+            epmap[epid].handle_ipc(data, dir)
+                        
+
+if __name__ == "__main__":
+    with open(sys.argv[1]) as f:
+        AOPTracer.replay(f)
+    sys.exit(0)
 
 dart_aop_tracer = DARTTracer(hv, "/arm-io/dart-aop", verbose=4)
 dart_aop_tracer.start()
