@@ -70,6 +70,7 @@ def decode_logprint(hv):
     return True
 
 hv.add_kext_symbols("proxyclient/hv/kernel.macho_kexts/AppleAOPAudio.kext")
+hv.add_kext_symbols("proxyclient/hv/kernel.macho_kexts/AppleSPU.kext")
 hv.clear_hw_bps()
 hv.add_sym_bp("com.apple.driver.AppleAOPAudio:__ZN16AppleAOPAudioLog4VLogEjPKcPc",
               hook=lambda ctx: decode_logprint(hv))
