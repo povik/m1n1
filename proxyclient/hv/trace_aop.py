@@ -169,7 +169,7 @@ class EPICCall:
         rets_fmt = [f"{k}={v}" for (k, v) in self.rets.items() if k != "_io"]
         logger(f"{type(self).__name__}({', '.join(args_fmt)}) -> ({', '.join(rets_fmt)})")
 
-    def read_resp(self, f, ep):
+    def read_resp(self, f):
         self.rets = self.RETS.parse_stream(f)
 
 CALLTYPES = []
@@ -240,33 +240,7 @@ class WrappedCall(EPICCall):
         return sub.category == EPICCategory.NOTIFY and sub.type == cls.TYPE
 
 @WrappedCall.reg_subclass
-class SetPowerState(WrappedCall):
-    CALLTYPE = 0xc3_00_00_05
-    ARGS = Struct(
-        "blank" / Const(0x0, Int32ul),
-        "unk1" / Hex(Const(0xffffffff, Int32ul)),
-        "calltype" / Hex(Int32ul),
-        "blank2" / ZPadding(16),
-        "pad" / Hex(Int32ul),
-        "len" / Hex(Int64ul),
-        "devid" / FourCC,
-        "modifier" / Int32ul,
-        "unk3" / Hex(Int32ul),
-        "devid_again" / FourCC,
-        "unk4" / Hex(Int32ul),
-        "unk5" / Hex(Int32ul),
-        "unk" / HexDump(GreedyBytes),
-        #"blank2" / ZPadding(8),
-        #"target" / FourCC,
-        #"unk6" / Hex(Int32ul),
-        #"blank3" / ZPadding(20),
-    )
-    RETS = Struct(
-        "unk" / HexDump(GreedyBytes),
-    )
-
-@WrappedCall.reg_subclass
-class AddDevice(WrappedCall):
+class StartDevice(WrappedCall):
     CALLTYPE = 0xc3_00_00_02
     ARGS = Struct(
         "blank" / Const(0x0, Int32ul),
@@ -276,7 +250,7 @@ class AddDevice(WrappedCall):
         "pad" / Hex(Int32ul),
         "len" / Hex(Int64ul),
         "devid" / FourCC,
-        "unk2" / Hex(Int32ul), # can be found in debug prints
+        "pad" / Hex(Int32ul),
     )
     RETS = Struct(
         "unk" / HexDump(GreedyBytes),
@@ -312,7 +286,7 @@ class ProbeDevice(WrappedCall):
     )
 
 @WrappedCall.reg_subclass
-class GetPowerState(WrappedCall):
+class GetDeviceProp(WrappedCall):
     CALLTYPE = 0xc3_00_00_04
     ARGS = Struct(
         "blank" / Const(0x0, Int32ul),
@@ -322,10 +296,8 @@ class GetPowerState(WrappedCall):
         "pad" / Hex(Int32ul),
         "len" / Hex(Int64ul),
         "devid" / FourCC,
-        "modifier" / Enum(Int32ul,
-            ORDINARY=200,
-            CLOCK_DOMAIN=203,
-        ),
+        "modifier" / Int32ul,
+        # Enum(Int32ul, ORDINARY=200, CLOCK_DOMAIN=203,),
         "unk6" / Hex(Const(0x01, Int32ul)),
     )
     RETS = Struct(
@@ -333,6 +305,81 @@ class GetPowerState(WrappedCall):
         #"unk1" / Const(0x4, Int32ul),
         "unk1" / Int32ul,
         "state" / FourCC,
+    )
+
+@WrappedCall.reg_subclass
+class SetDeviceProp(WrappedCall):
+    CALLTYPE = 0xc3_00_00_05
+    ARGS = Struct(
+        "blank" / Const(0x0, Int32ul),
+        "unk1" / Hex(Const(0xffffffff, Int32ul)),
+        "calltype" / Hex(Int32ul),
+        "blank2" / ZPadding(16),
+        "pad" / Hex(Int32ul),
+        "len" / Hex(Int64ul),
+        "devid" / FourCC,
+        "modifier" / Int32ul,
+        "len2" / Hex(Const(len_(this.data), Int32ul)),
+        "data" / Switch(this.modifier, {
+            200: Struct(
+                "unk1" / Int32ul,
+                "clockSource" / FourCC,
+                "pdmFrequency" / Int32ul,
+                "unk3_clk" / Int32ul,
+                "unk4_clk" / Int32ul,
+                "unk5_clk" / Int32ul,
+                "channelPolaritySelect" / Hex(Int32ul),
+                "unk7" / Hex(Int32ul),
+                "unk8" / Hex(Int32ul),
+                "unk9" / Hex(Int16ul),
+                "ratios" / Struct(
+                    "r1" / Int8ul,
+                    "r2" / Int8ul,
+                    "r3" / Int8ul,
+                    "pad" / Int8ul,
+                ),
+                "filterLengths" / Hex(Int32ul),
+                "coeff_bulk" / Int32ul,
+                "coefficients" / Struct(
+                    "c1" / Int32sl[this._.ratios.r3 * 4 + 4],
+                    "c2" / Int32sl[this._.ratios.r2 * 4 + 4],
+                    "c3" / Int32sl[this._.ratios.r1 * 4 + 4],
+                ),
+                "junk" / Hex(Int32ul[
+                    this.coeff_bulk - 12 \
+                    - (this.ratios.r1 + this.ratios.r2 + this.ratios.r3) * 4
+                ]),
+                "unk10" / Int32ul, # maybe
+                "micTurnOnTimeMs" / Int32ul,
+                "blank" / ZPadding(16),
+                "unk11" / Int32ul,
+                "micSettleTimeMs" / Int32ul,
+                "blank2" / ZPadding(69),
+            ),
+            210: Struct(
+                "latency" / Int32ul,
+                "ratios" / Struct(
+                    "r1" / Int8ul,
+                    "r2" / Int8ul,
+                    "r3" / Int8ul,
+                    "pad" / Int8ul,
+                ),
+                "filterLengths" / Hex(Int32ul),
+                "coeff_bulk" / Int32ul,
+                "coefficients" / Struct(
+                    "c1" / Int32sl[this._.ratios.r3 * 4 + 4],
+                    "c2" / Int32sl[this._.ratios.r2 * 4 + 4],
+                    "c3" / Int32sl[this._.ratios.r1 * 4 + 4],
+                ),
+                "junk" / Hex(Int32ul[
+                    this.coeff_bulk - 12 \
+                    - (this.ratios.r1 + this.ratios.r2 + this.ratios.r3) * 4
+                ]),
+            ),
+        }, default=HexDump(GreedyBytes))
+    )
+    RETS = Struct(
+        "unk" / HexDump(GreedyBytes),
     )
 
 @reg_calltype
@@ -349,7 +396,7 @@ class IndirectCall(EPICCall):
     def matches(cls, hdr, sub):
         return sub.category == EPICCategory.COMMAND
 
-    def read_resp(self, f, ep):
+    def read_resp(self, f):
         self.rets = self.RETS.parse_stream(f)
 
     def read_txbuf(self, ep):
@@ -368,11 +415,21 @@ class IndirectCall(EPICCall):
         self.rxbuf = ep.dart.ioread(0, cmd.rxbuf, cmd.rxlen)
 
         ep.log(f"===COMMAND RX DATA=== addr={cmd.rxbuf:#x}")
-        chexdump(self.txbuf)
+        chexdump(self.rxbuf)
         ep.log(f"===END DATA===")
 
     def unwrap(self):
-        pass
+        fd = BytesIO()
+        fd.write(b"\x00\x00\x00\x00")
+        fd.write(self.txbuf)
+        fd.seek(0)
+        wrapped = WrappedCall.from_stream(fd)
+        fd = BytesIO()
+        fd.write(b"\x00\x00\x00\x00")
+        fd.write(self.rxbuf)
+        fd.seek(0)
+        wrapped.read_resp(fd)
+        return wrapped
 
 class EPICEp(AFKEp):
     def __init__(self, *args, **kwargs):
@@ -404,7 +461,7 @@ class EPICEp(AFKEp):
             return False
 
         call = self.pending_call
-        call.read_resp(fd, self)
+        call.read_resp(fd)
         self.trace_call(call)
         self.pending_call = None
         return True
@@ -443,7 +500,13 @@ class EPICEp(AFKEp):
     def trace_call(self, call):
         if isinstance(call, IndirectCall):
             call.read_rxbuf(self)
-            #call = call.unwrap()
+            self.log("Unwrapping indirect (see below)")
+            call.dump(self.log)
+            call = call.unwrap()
+            #self.log("TX")
+            #chexdump(call.txbuf)
+            #self.log("RX")
+            #chexdump(call.rxbuf)
         call.dump(self.log)
 
 class SPUAppEp(EPICEp):
@@ -484,7 +547,7 @@ class AOPTracer(ASCTracer):
     }
 
     @classmethod
-    def replay(cls, f, passthru=False):
+    def replay(cls, f, passthru=True):
         epmap = dict()
         epcont = EPContainer()
 
