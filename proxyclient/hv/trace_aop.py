@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: MIT
+
+from m1n1.proxyutils import RegMonitor
 from m1n1.trace import Tracer
 from m1n1.trace.dart import DARTTracer
 from m1n1.trace.asc import ASCTracer, EP, EPState, msg, msg_log, DIR, EPContainer
@@ -59,7 +61,6 @@ class AFKEp(EP):
         self.state.verbose = 1
 
     def start(self):
-        #self.add_mon()
         self.create_bufs()
 
     def create_bufs(self):
@@ -73,11 +74,6 @@ class AFKEp(EP):
             off, size = self.state.rxbuf_info
             self.rxbuf = AFKRingBufSniffer(self, self.state.rxbuf,
                                            self.state.shmem_iova + off, size)
-
-    def add_mon(self):
-        if self.state.shmem_iova:
-            iomon.add(self.state.shmem_iova, 32768,
-                      name=f"{self.name}.shmem@{self.state.shmem_iova:08x}", offset=0)
 
     Init =          msg_log(0x80, DIR.TX)
     Init_Ack =      msg_log(0xa0, DIR.RX)
@@ -96,7 +92,6 @@ class AFKEp(EP):
         self.state.rxbuf = EPState()
         self.state.txbuf_info = None
         self.state.rxbuf_info = None
-        #self.add_mon()
 
     @msg(0xa2, DIR.TX, AFKEP_Send)
     def Send(self, msg):
@@ -174,11 +169,8 @@ class EPICCall:
         rets_fmt = [f"{k}={v}" for (k, v) in self.rets.items() if k != "_io"]
         logger(f"{type(self).__name__}({', '.join(args_fmt)}) -> ({', '.join(rets_fmt)})")
 
-    def read_resp(self, f, logger=None):
-        if logger is None:
-            logger = print
+    def read_resp(self, f, ep):
         self.rets = self.RETS.parse_stream(f)
-        self.dump(logger)
 
 CALLTYPES = []
 def reg_calltype(calltype):
@@ -348,9 +340,39 @@ class IndirectCall(EPICCall):
     ARGS = EPICCmd
     RETS = EPICCmd
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.txbuf = None
+        self.rxbuf = None
+
     @classmethod
     def matches(cls, hdr, sub):
         return sub.category == EPICCategory.COMMAND
+
+    def read_resp(self, f, ep):
+        self.rets = self.RETS.parse_stream(f)
+
+    def read_txbuf(self, ep):
+        cmd = self.args
+        # TODO: how come we need this?
+        ep.dart.invalidate_cache()
+        self.txbuf = ep.dart.ioread(0, cmd.txbuf, cmd.txlen)
+
+        ep.log(f"===COMMAND TX DATA=== addr={cmd.txbuf:#x}")
+        chexdump(self.txbuf)
+        ep.log(f"===END DATA===")
+
+    def read_rxbuf(self, ep):
+        cmd = self.rets
+        ep.dart.invalidate_cache()
+        self.rxbuf = ep.dart.ioread(0, cmd.rxbuf, cmd.rxlen)
+
+        ep.log(f"===COMMAND RX DATA=== addr={cmd.rxbuf:#x}")
+        chexdump(self.txbuf)
+        ep.log(f"===END DATA===")
+
+    def unwrap(self):
+        pass
 
 class EPICEp(AFKEp):
     def __init__(self, *args, **kwargs):
@@ -367,14 +389,12 @@ class EPICEp(AFKEp):
         self.log(f"Hello! (endpoint {name})")
         return True
 
-    def handle_call(self, hdr, sub, fd):
+    def handle_notify(self, hdr, sub, fd):
         for calltype in CALLTYPES:
             if calltype.matches(hdr, sub):
-                try:
-                    self.pending_call = calltype.from_stream(fd)
-                except Exception as e:
-                    self.log(f"failed parsing ({calltype.__name__}): {e}")
-                    return False
+                call = calltype.from_stream(fd)
+                self.trace_call_early(call)
+                self.pending_call = call
                 return True
 
         return False
@@ -383,20 +403,19 @@ class EPICEp(AFKEp):
         if self.pending_call is None:
             return False
 
-        try:
-            self.pending_call.read_resp(fd, logger=self.log)
-        except Exception as e:
-            self.log(f"failed parsing: {e}")
+        call = self.pending_call
+        call.read_resp(fd, self)
+        self.trace_call(call)
         self.pending_call = None
         return True
 
     def dispatch_ipc(self, dir, hdr, sub, fd):
         if sub.category == EPICCategory.COMMAND:
-            return self.handle_call(hdr, sub, fd)
+            return self.handle_notify(hdr, sub, fd)
         if dir == "<" and sub.category == EPICCategory.REPORT:
             return self.handle_hello(hdr, sub, fd)
         if dir == ">" and sub.category == EPICCategory.NOTIFY:
-            return self.handle_call(hdr, sub, fd)
+            return self.handle_notify(hdr, sub, fd)
         if dir == "<" and sub.category == EPICCategory.REPLY:
             return self.handle_reply(hdr, sub, fd)
 
@@ -415,6 +434,17 @@ class EPICEp(AFKEp):
         self.log(f"  Len {sub.length} Ver {sub.version} Cat {sub.category} Type {sub.type:#x} Ts {sub.timestamp:#x}")
         self.log(f"  Unk1 {sub.unk1:#x} Unk2 {sub.unk2:#x}")
         chexdump(fd.read())
+
+    def trace_call_early(self, call):
+        # called at TX time
+        if isinstance(call, IndirectCall):
+            call.read_txbuf(self)
+
+    def trace_call(self, call):
+        if isinstance(call, IndirectCall):
+            call.read_rxbuf(self)
+            #call = call.unwrap()
+        call.dump(self.log)
 
 class SPUAppEp(EPICEp):
     SHORT = "SPUApp"
@@ -454,7 +484,7 @@ class AOPTracer(ASCTracer):
     }
 
     @classmethod
-    def replay(cls, f):
+    def replay(cls, f, passthru=False):
         epmap = dict()
         epcont = EPContainer()
 
@@ -480,6 +510,40 @@ class AOPTracer(ASCTracer):
                 setattr(epcont, ep.name, ep)
                 ep.start()
 
+        def readdump(firstline, hdr, f):
+            l = firstline
+            assert hdr in l
+            postscribe = l[l.index(hdr) + len(hdr):]
+            annotation = dict([s.split("=") for s \
+                              in postscribe.strip().split(" ")])
+
+            dump = []
+            for l in f:
+                if "===END DATA===" in l:
+                    break
+                dump.append(l)
+            return chexundump("".join(dump)), annotation
+
+        # hook command buffer reads
+        def read_txbuf(icall, ep):
+            hdr = "===COMMAND TX DATA==="
+            for l in f:
+                if hdr in l:
+                    break
+            data, annot = readdump(l, hdr, f)
+            assert int(annot["addr"], 16) == icall.args.txbuf
+            icall.txbuf = data
+        def read_rxbuf(icall, ep):
+            hdr = "===COMMAND RX DATA==="
+            for l in f:
+                if hdr in l:
+                    break
+            data, annot = readdump(l, hdr, f)
+            assert int(annot["addr"], 16) == icall.rets.rxbuf
+            icall.rxbuf = data
+        IndirectCall.read_rxbuf = read_rxbuf
+        IndirectCall.read_txbuf = read_txbuf
+
         for l in f:
             if (rxhdr := "===RX DATA===") in l:
                 dir = "<"
@@ -488,20 +552,11 @@ class AOPTracer(ASCTracer):
                 dir = ">"
                 hdr = txhdr
             else:
-                #print(l, end="")
+                if passthru:
+                    print(l, end="")
                 continue
-
-            fields_str = l[l.index(hdr) + len(hdr):]
-            fields = dict([s.split("=") for s in fields_str.strip().split(" ")])
-            epid = int(fields["epid"])
-
-            datadump = ""
-            for l in f:
-                if "===END DATA===" in l:
-                    break
-                datadump += l
-
-            data = chexundump(datadump)
+            data, annot = readdump(l, hdr, f)
+            epid = int(annot["epid"])
             epmap[epid].handle_ipc(data, dir)
                         
 
