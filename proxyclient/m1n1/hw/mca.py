@@ -108,3 +108,6 @@ class MCACluster:
             self.rxa, self.rxb
         ]
 
+    def dump_regs(self):
+        for regmap in self.all_regs:
+            regmap.dump_regs()
