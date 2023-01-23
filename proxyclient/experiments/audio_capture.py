@@ -72,7 +72,7 @@ serdes.BITDELAY.val = 1
 serdes.CHANMASK[0].val = 0xffff_ffff
 serdes.CHANMASK[1].val = 0xffff_fffe
 
-regs.PORT_ENABLES.set(CLOCK1=1, CLOCK2=1, DATA=0)
+regs.PORT_ENABLES.set(BCLK=1, LRCK=1, DATA=0)
 regs.PORT_CLK_SEL.set(SEL=(cl_no + 1))
 regs.MCLK_STATUS.set(EN=1)
 regs.SYNCGEN_STATUS.set(EN=1)

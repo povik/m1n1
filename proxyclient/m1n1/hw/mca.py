@@ -10,9 +10,9 @@ class R_MCLK_CONF(Register32):
     SEL = 3, 0
 
 class R_PORT_ENABLES(Register32):
-    CLOCK1 = 1
-    CLOCK2 = 2
-    DATA   = 3
+    BCLK = 1
+    LRCK = 2
+    DATA = 3
 
 class R_PORT_CLKSEL(Register32):
     SEL = 11, 8
