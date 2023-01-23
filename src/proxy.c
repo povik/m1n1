@@ -484,6 +484,9 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
         case P_HV_WRITE_HCR:
             hv_write_hcr(request->args[0]);
             break;
+        case P_HV_MAP_ADMAC_TRACER:
+            hv_map_admac_tracer(request->args[0]);
+            break;
 
         case P_FB_INIT:
             fb_init(request->args[0]);

@@ -452,7 +452,8 @@ class HV(Reloadable):
 
         maps = sorted(self.mmio_maps[evt.addr].values(), reverse=True)
         for mode, ident, read, write, kwargs in maps:
-            if mode > TraceMode.WSYNC or (evt.flags.WRITE and mode > TraceMode.UNBUF):
+            if (mode > TraceMode.WSYNC or (evt.flags.WRITE and mode > TraceMode.UNBUF)) \
+                    and mode != TraceMode.RESERVED:
                 print(f"ERROR: mmiotrace event but expected {mode.name} mapping")
                 continue
             if mode == TraceMode.OFF:
@@ -491,7 +492,8 @@ class HV(Reloadable):
 
         val = data.data
 
-        if mode not in (TraceMode.HOOK, TraceMode.SYNC, TraceMode.WSYNC):
+        if mode not in (TraceMode.HOOK, TraceMode.SYNC,
+                        TraceMode.WSYNC, TraceMode.RESERVED):
             raise Exception(f"VM hook with unexpected mapping at {data.addr:#x}: {maps[0][0].name}")
 
         if not data.flags.WRITE:

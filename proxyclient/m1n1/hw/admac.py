@@ -3,7 +3,8 @@ import sys, time
 from enum import IntEnum
 from ..utils import *
 
-__all__ = ["ADMACRegs", "ADMAC", "E_BUSWIDTH", "E_FRAME"]
+__all__ = ["ADMACRegs", "ADMAC", "ADMACDescriptor",
+           "ADMACReport", "E_BUSWIDTH", "E_FRAME"]
 
 
 class R_RING(Register32):

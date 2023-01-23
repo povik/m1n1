@@ -67,6 +67,9 @@ bool hv_pa_rw(struct exc_info *ctx, u64 addr, u64 *val, bool write, int width);
 /* AIC events through tracing the MMIO event address */
 bool hv_trace_irq(u32 type, u32 num, u32 count, u32 flags);
 
+/* Other tracing */
+void hv_map_admac_tracer(u64 base);
+
 /* Virtual peripherals */
 void hv_vuart_poll(void);
 void hv_map_vuart(u64 base, int irq, iodev_id_t iodev);

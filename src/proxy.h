@@ -132,6 +132,7 @@ typedef enum {
     P_HV_WRITE_HCR,
     P_HV_MAP_VIRTIO,
     P_VIRTIO_PUT_BUFFER,
+    P_HV_MAP_ADMAC_TRACER,
 
     P_FB_INIT = 0xd00,
     P_FB_SHUTDOWN,
